@@ -88,6 +88,9 @@ abstract class table_report extends php_report {
     //constant used to define a token we are replacing with filter sql
     const PARAMETER_TOKEN = "''php_report_parameters''";
 
+    /** @var array To track groupbys that are required for multi-line/record fields */
+    public $pseudogroupby;
+
     /**
      * Contructor.
      *
@@ -143,6 +146,16 @@ abstract class table_report extends php_report {
 //  DATA FUNCTIONS:                                                //
 //                                                                 //
 /////////////////////////////////////////////////////////////////////
+
+    /**
+     * Helper method to format custom field default data
+     * porperly formating multi-valued arrays
+     * @param mixed $defaultdata either scalar value or a multi-valued array
+     * @return string the formatted default data
+     */
+    public function format_default_data($defaultdata) {
+        return is_array($defaultdata) ? implode(', ', $defaultdata) : $defaultdata;
+    }
 
     /**
      * Set the array of report columns.
@@ -475,6 +488,7 @@ abstract class table_report extends php_report {
         $this->table->spanrow = array();
         $this->table->firstcolumn = array();
         $this->table->rowclass = array();
+        $this->table->pseudogroupby = $this->pseudogroupby;
 
         //also looping through $this->summary
         $count = 0;
@@ -912,6 +926,14 @@ abstract class table_report extends php_report {
                     }
                 }
             }
+            // Add mutliline groupby data required later
+            if (!empty($this->pseudogroupby)) {
+                foreach ($this->pseudogroupby as $effective_id) {
+                    if (!empty($datum->$effective_id)) {
+                        $row[$effective_id] = $datum->$effective_id;
+                    }
+                }
+            }
         }
         return $row;
     }
@@ -1051,8 +1073,8 @@ abstract class table_report extends php_report {
      * @return  string           A CSV export 'safe' string.
      */
     function csv_escape_string($input) {
-        $input = ereg_replace("[\r\n\t]", ' ', $input);
-        $input = ereg_replace('"', '""', $input);
+        $input = preg_replace("/[\r\n\t]/", ' ', $input);
+        $input = preg_replace('/"/', '""', $input);
         $input = '"' . $input . '"';
 
         return $input;
@@ -1149,6 +1171,20 @@ abstract class table_report extends php_report {
         if (!empty($grouping_fields)) {
             $this->set_groupings($grouping_fields);
         }
+
+        // we must save multiline groupby data
+        $pseudogroupby = $this->get_report_sql_multiline_groups();
+        $this->pseudogroupby = !empty($pseudogroupby) ? explode(',', $pseudogroupby) : array();
+        array_walk($this->pseudogroupby, function(&$item, $key, &$pgarray) {
+                $as_position = stripos($item, ' AS ');
+                if ($as_position !== false) {
+                    $item = trim(substr($item, $as_position + strlen(' AS ')));
+                } else {
+                    unset($pgarray[$key]);
+                }
+            },
+            $this->pseudogroupby
+        );
     }
 
     /**
@@ -1320,6 +1356,11 @@ abstract class table_report extends php_report {
             foreach ($this->groupings as $grouping) {
                 $list[] = $grouping->field . " as " . $grouping->id;
             }
+        }
+
+        $pseudogroupby = $this->get_report_sql_multiline_groups();
+        if (!empty($pseudogroupby)) {
+            $list = array_merge($list, explode(',', $pseudogroupby));
         }
 
         return implode(',', $list);
@@ -1529,6 +1570,7 @@ abstract class table_report extends php_report {
             //ordering
             $sql .= $this->get_order_by_clause();
         }
+        //error_log("table_report::get_complete_sql_query(): sql = {$sql}");
         return array($sql, $params);
     }
 
@@ -1550,6 +1592,68 @@ abstract class table_report extends php_report {
     }
 
     /**
+     * Method to get the multivalued separator string for export format
+     *
+     * @param mixed $exportformat data export format
+     * @return string the separator string for specified export format
+     */
+    public function get_multivalued_separator($exportformat) {
+        switch ($exportformat) {
+            case php_report::$EXPORT_FORMAT_HTML:
+                return "<br/>\n";
+            case php_report::$EXPORT_FORMAT_PDF:
+                return "\n";
+            default:
+                return ', '; // TBD: ', ' could clash with data???
+        }
+    }
+
+    /**
+     * Method to append multi-line groupby fields to previous row data
+     *
+     * @param object $lastrow the previous data row to modify
+     * @param object $lastrec the previous table data record
+     * @param object $currentrec the current table data record to compare
+     * @param mixed $exportformat data export format
+     */
+    public function append_data(&$lastrow, $lastrec, $currentrec, $exportformat) {
+        foreach ($lastrec as $key => $value) {
+            $curvalues = empty($lastrow->$key) ? array() : explode($this->get_multivalued_separator($exportformat), $lastrow->$key);
+            if (!empty($currentrec->$key) && $value != $currentrec->$key && !in_array($currentrec->$key, $curvalues)) {
+                if (empty($lastrow->$key)) {
+                    $lastrow->$key = '';
+                }
+                $lastrow->$key .= $this->get_multivalued_separator($exportformat).$currentrec->$key;
+            }
+        }
+    }
+
+    /**
+     * Method to determine if the only change from last data row is mutli-line
+     * groupby fields
+     *
+     * @param array $last the previous table data record
+     * @param array $current the current table data record to compare
+     * @return bool true if multi-line groupby fields all the same
+     */
+    public function multiline_groupby($last, $current) {
+        $nochange = false;
+        foreach ($last as $key => $value) {
+            if (in_array($key, $this->pseudogroupby)) {
+                if (empty($current->$key)) {
+                    if (!empty($value)) {
+                        return false;
+                    }
+                } else if ($value != $current->$key) {
+                    return false;
+                }
+                $nochange = true;
+            }
+        }
+        return $nochange;
+    }
+
+    /**
      * Sets the report data, applying filters and sorting
      *
      */
@@ -1564,13 +1668,11 @@ abstract class table_report extends php_report {
         $paging_info = $this->get_paging_information();
         $offset = $paging_info[table_report::offset];
         $limit = $paging_info[table_report::limit];
-
-        if ($report_results = $DB->get_recordset_sql($sql, $params, $offset, $limit) and
-           $report_results->valid()) {
+        if (($report_results = $DB->get_recordset_sql($sql, $params, $offset, $limit)) && $report_results->valid()) {
             $this->data = array();
             $this->summary = array();
             $report_result = $report_results->current();
-            while($report_result) {
+            while ($report_result) {
                 $last_result = clone($report_result); // save before transform!
                 //clone the object because transform_record will alter it in-place
                 $this->data[] = $this->transform_record(clone($report_result), php_report::$EXPORT_FORMAT_HTML);
@@ -1597,6 +1699,20 @@ abstract class table_report extends php_report {
                                           php_report::$EXPORT_FORMAT_HTML))) {
                         $this->data[] = $grpcolsum;
                         $this->summary[] = 'group_summary';
+                    }
+                }
+                $lastrow = count($this->data) - 1;
+                while ($report_result && $this->multiline_groupby($last_result, $report_result)) {
+                    // We want to add only changed data to previous row
+                    $this->append_data($this->data[$lastrow], $last_result, $report_result, php_report::$EXPORT_FORMAT_HTML);
+                    $last_result = clone($report_result);
+                    // move on to the next record
+                    $report_results->next();
+                    // fetch the current record
+                    $report_result = $report_results->current();
+                    if (!$report_results->valid()) {
+                        // make sure the current record is a valid one
+                        $report_result = false;
                     }
                 }
             }
@@ -1670,6 +1786,16 @@ abstract class table_report extends php_report {
      *                  or '' if no grouping should be used
      */
     function get_report_sql_groups() {
+        return '';
+    }
+
+    /**
+     * Specifies the fields to group by in the report, unless multi-line data
+     *
+     * @return  string  Comma-separated list of columns to group by if not multi
+     *                  -lined data, or '' if no grouping should be used
+     */
+    function get_report_sql_multiline_groups() {
         return '';
     }
 
@@ -1932,6 +2058,8 @@ function print_table($table, $return=false) {
         $oddeven = 1;
         $keys=array_keys($table->data);
         $lastrowkey = end($keys);
+        // we must locate multiline groupby data
+        $pseudogroupby = $table->pseudogroupby;
         foreach ($table->data as $key => $row) {
             //this needs to be row and grouping specific
             $oddeven = $oddeven ? 0 : 1;
@@ -1982,8 +2110,10 @@ function print_table($table, $return=false) {
                 $lastkey = end($keys2);
 
                 $i = 0;
-
                 foreach ($row as $key => $item) {
+                    if (in_array($key, $pseudogroupby)) {
+                        continue;
+                    }
                     if (!isset($size[$key])) {
                         $size[$key] = '';
                     }

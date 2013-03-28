@@ -39,6 +39,7 @@ require_once($CFG->dirroot .'/blocks/php_report/lib/filtering.php');
 $report_shortname = required_param('id', PARAM_CLEAN);
 //optional action url for form
 $action = optional_param('url', null, PARAM_CLEAN);
+$perpage = optional_param('perpage', 25, PARAM_INT);
 
 $PAGE->set_context(get_context_instance(CONTEXT_SYSTEM));
 if (empty($this)) {
@@ -98,7 +99,7 @@ if (!empty($reset_form)) {
     //because get_data calls definition_after_data, which adds the cancel button
     if ($parameter_form->is_cancelled()) {
         //just re-display the report
-        $instance->main('', '', 0, 20, '', $report_shortname);
+        $instance->main('', '', 0, $perpage, '', $report_shortname);
         die;
     } else if (isset($data->save_defaults)) {
         //store form settings as report-specific user preferences
@@ -108,7 +109,7 @@ if (!empty($reset_form)) {
         php_report_filtering_save_preferences($data, $filter_object, $report_shortname, true);
 
         //re-display the report
-        $instance->main('', '', 0, 20, '', $report_shortname);
+        $instance->main('', '', 0, $perpage, '', $report_shortname);
         die;
     }
 }
@@ -142,3 +143,4 @@ M.form.dependencyManager = null;
     echo $jscode;
     //error_log('config_params.php (AJAX): '. $jscode);
 }
+
