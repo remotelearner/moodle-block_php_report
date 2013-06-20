@@ -692,7 +692,7 @@ class php_report_export_pdf extends php_report_export {
         if ($recordset = $DB->get_recordset_sql($query, $params)) {
 
             //need to track both so we can detect grouping changes
-            $datum = $recordset->current();;
+            $datum = $recordset->current();
             $next_datum = false;
 
             //tracks the state of alternating background colours
@@ -721,7 +721,23 @@ class php_report_export_pdf extends php_report_export {
                     $column_colour_state = 0;
                 }
 
-                //render main data entry
+                // Must check for multi-line groupby field data to include
+                while ($this->report->multiline_groupby($cur_datum, $next_datum)) {
+                    // We want to add only changed data to previous row
+                    $this->report->append_data($datum, $cur_datum, $next_datum, php_report::$EXPORT_FORMAT_PDF);
+                    $cur_datum = clone($next_datum);
+                    // pre-emptively fetch the next record for grouping changes
+                    $recordset->next();
+                    // fetch the current record
+                    $next_datum = $recordset->current();
+                    if (!$recordset->valid()) {
+                        // make sure the current record is a valid one
+                        $next_datum = false;
+                        break;
+                    }
+                }
+
+                // render main data entry
                 $datum = $this->report->get_row_content($datum, false, php_report::$EXPORT_FORMAT_PDF);
 
                 //render the entry, taking into account the current state of the background colour

@@ -56,8 +56,8 @@ class php_report_export_csv extends php_report_export {
      * @return  string           A CSV export 'safe' string.
      */
     function csv_escape_string($input) {
-        $input = ereg_replace("[\r\n\t]", ' ', $input);
-        $input = ereg_replace('"', '""', $input);
+        $input = preg_replace("/[\r\n\t]/", ' ', $input);
+        $input = preg_replace('/"/', '""', $input);
         $input = '"' . $input . '"';
 
         return $input;
@@ -218,9 +218,11 @@ class php_report_export_csv extends php_report_export {
         $row = array();
         $grouping_object = $this->report->initialize_groupings();
 
-        //iterate through the result records
+        // iterate through the result records
         if ($recordset = $DB->get_recordset_sql($query, $params)) {
-            foreach ($recordset as $datum) {
+            $datum = $recordset->current();
+            $next_datum = false;
+            while ($datum != false) {
                 if (!is_object($datum)) {
                     continue;
                 }
@@ -269,7 +271,16 @@ class php_report_export_csv extends php_report_export {
                     $this->write_to_file($storage_path, $csv_file_handle, $row);
                 } // end: !$init
 
-                //apply any necessary transformation
+                $last_datum = clone($datum);
+                $recordset->next();
+                // fetch the current record
+                $next_datum = $recordset->current();
+                if (!$recordset->valid()) {
+                    // make sure the current record is a valid one
+                    $next_datum = false;
+                }
+
+                // apply any necessary transformation
                 $datum = $this->report->transform_record($datum, php_report::$EXPORT_FORMAT_CSV);
 
                 $row = array();
@@ -302,7 +313,23 @@ class php_report_export_csv extends php_report_export {
                     }
                 }
 
-                //iterate through columns
+                // Must check for multi-line groupby field data to include
+                while ($this->report->multiline_groupby($last_datum, $next_datum)) {
+                    // We want to add only changed data to previous row
+                    $this->report->append_data($datum, $last_datum, $next_datum, php_report::$EXPORT_FORMAT_CSV);
+                    $last_datum = clone($next_datum);
+                    // pre-emptively fetch the next record for grouping changes
+                    $recordset->next();
+                    // fetch the current record
+                    $next_datum = $recordset->current();
+                    if (!$recordset->valid()) {
+                        // make sure the current record is a valid one
+                        $next_datum = false;
+                        break;
+                    }
+                }
+
+                // iterate through columns
                 foreach ($this->report->headers as $id => $unused) {
                     //make sure this column is exportable
                     if (in_array(php_report::$EXPORT_FORMAT_CSV, $this->report->columnexportformats[$id])) {
@@ -317,8 +344,9 @@ class php_report_export_csv extends php_report_export {
                     }
                 }
 
-                //write out the data row
+                // write out the data row
                 $this->write_to_file($storage_path, $csv_file_handle, $row);
+                $datum = $next_datum;
             }
         }
 
