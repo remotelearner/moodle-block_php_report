@@ -16,7 +16,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 $plugin->version = 2011060301;
-$plugin->release = '2.2.0.19 (Build: 20130620)';
+$plugin->release = '2.2.1.0 (Build: 20130821)';
 $plugin->dependencies = array(
     'elis_core' => 2012032104
 );
